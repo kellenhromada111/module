@@ -1,142 +1,229 @@
-(() => {
-    const sid = game.options.serverId;
-    const server = game.options.servers[sid];
-    const ws = new WebSocket(`wss://${server.hostname}:443/`);
-    ws.binaryType = "arraybuffer";
-    const codec = new game.networkType().codec;
-
-    // Initialize the wasmModule
-    const Module = wasmModule((decodedData) => {
-        console.log("WASM Module initialized with decoded data:", decodedData);
-    }, server.ipAddress, server.hostname);
-
-    ws.onclose = () => {
-        ws.isclosed = true;
-    };
-
-    ws.onmessage = async (msg) => {
-        const opcode = new Uint8Array(msg.data)[0];
-        if (opcode == 5) {
-            Module.onDecodeOpcode5(new Uint8Array(msg.data), server.ipAddress, (e) => {
-                const socketNameElement = document.getElementsByClassName('socketName')[0];
-                const displayName = socketNameElement && socketNameElement.value !== "" ? socketNameElement.value : "Player";
-
-                ws.send(codec.encode(4, {
-                    displayName: displayName,
-                    extra: e[5]
-                }));
-                ws.enterworld2 = e[6];
-            });
-            return;
-        }
-        if (opcode == 10) {
-            ws.send(Module.finalizeOpcode10(new Uint8Array(msg.data)));
-            return;
-        }
-        const data = codec.decode(msg.data);
-        if (data.name) {
-            ws.data = data;
-
-            if (ws.data.name == "Dead") {
-                ws.network.sendInput({
-                    respawn: 1
-                });
-            }
-        }
-        if (opcode == 4) {
-            if (!data.allowed) return;
-            ws.uid = data.uid;
-            ws.enterworld2 && ws.send(ws.enterworld2);
-
-            ws.send(codec.encode(9, {
-                name: "JoinPartyByShareKey",
-                partyShareKey: document.getElementsByClassName('partyShareKey')[0].value
-            }));
-
-            for (let i = 0; i < 26; i++) {
-                ws.send(new Uint8Array([3, 17, 123, 34, 117, 112, 34, 58, 49, 44, 34, 100, 111, 119, 110, 34, 58, 48, 125]));
-            }
-
-            ws.send(new Uint8Array([7, 0]));
-            ws.send(new Uint8Array([9, 6, 0, 0, 0, 126, 8, 0, 0, 108, 27, 0, 0, 146, 23, 0, 0, 82, 23, 0, 0, 8, 91, 11, 0, 8, 91, 11, 0, 0, 0, 0, 0, 32, 78, 0, 0, 76, 79, 0, 0, 172, 38, 0, 0, 120, 155, 0, 0, 166, 39, 0, 0, 140, 35, 0, 0, 36, 44, 0, 0, 213, 37, 0, 0, 100, 0, 0, 0, 120, 55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 134, 6, 0, 0]));
-        }
-    };
-
-    ws.sendPacket = (event, data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.send(codec.encode(event, data));
-        } else {
-            console.warn("WebSocket is not open. Cannot send packet.");
-        }
-    };
-
-    ws.network = {
-        sendInput: (data) => {
-            console.log("Sending Input Data:", data);
-            try {
-                ws.sendPacket(3, data);
-            } catch (error) {
-                console.error("Error sending input:", error);
-            }
-        },
-        sendRpc: (data) => {
-            try {
-                ws.sendPacket(9, data);
-            } catch (error) {
-                console.error("Error sending RPC:", error);
-            }
-        }
-    };
-
-    window.activeSockets.push({ ws, id: socketId });
-
-    ws.gameUpdate = () => {
-        ws.moveToward = (position) => {
-            let x = Math.round(position.x);
-            let y = Math.round(position.y);
-
-            let myX = Math.round(ws.playerTick.position.x);
-            let myY = Math.round(ws.playerTick.position.y);
-
-            let offset = 30;
-
-            if (-myX + x > offset) ws.network.sendInput({ left: 0 }); else ws.network.sendInput({ left: 1 });
-            if (myX - x > offset) ws.network.sendInput({ right: 0 }); else ws.network.sendInput({ right: 1 });
-
-            if (-myY + y > offset) ws.network.sendInput({ up: 0 }); else ws.network.sendInput({ up: 1 });
-            if (myY - y > offset) ws.network.sendInput({ down: 0 }); else ws.network.sendInput({ down: 1 });
+let wasmBuffers;
+fetch("https://cdn.glitch.global/7d28c753-c81a-408d-9529-94f5b60a0e4d/zombs_wasm.wasm").then(e => e.arrayBuffer().then(r => {
+    wasmBuffers = r;
+}));
+let wasmModule = (callback, data_12, hostname) => {
+    function _0x364d84$jscomp$0(item, value, i) {
+        var check = value + i;
+        var input = value;
+        for(; item[input] && !(input >= check);) {
+            ++input;
         };
-
-        ws.moveToward(game.renderer.screenToWorld(mousePosition.x, mousePosition.y));
-    }
-
-
-    const setupKeyListener = () => {
-        window.addEventListener('keydown', (event) => {
-            if (event.key === 'f' || event.key === 'F') {
-                ws.network.sendRpc({
-                    name: 'JoinPartyByShareKey',
-                    partyShareKey: document.getElementsByClassName('partyShareKey')[0].value
-                });
-            } else if (event.key === 'i' || event.key === 'I') {
-                ws.network.sendRpc({
-                    name: "LeaveParty"
-                });
-            } else if (event.key === 'k' || event.key === 'K') {
-                ws.network.sendRpc({
-                    name: "SendChatMessage",
-                    channel: "Local",
-                    message: "Sockets be chating now looool"
-                });
-            } else if (event.key === 't' || event.key === 'T') {
-                if (typeof window.toggleWsPlayerTrick === 'function') {
-                    toggleWsPlayerTrick();
+        if(input - value > 16 && item.subarray && _0x30c1b5$jscomp$0) {
+            return _0x30c1b5$jscomp$0.decode(item.subarray(value, input));
+        };
+        var segmentedId = "";
+        for(; value < input;) {
+            let i = item[value++];
+            if(128 & i) {
+                var b1 = 63 & item[value++];
+                if(192 != (224 & i)) {
+                    var _0x4e8ea1 = 63 & item[value++];
+                    if(i = 224 == (240 & i) ? (15 & i) << 12 | b1 << 6 | _0x4e8ea1 : (7 & i) << 18 | b1 << 12 | _0x4e8ea1 << 6 | 63 & item[value++], i < 65536) {
+                        segmentedId = segmentedId + String.fromCharCode(i);
+                    } else {
+                        var snI = i - 65536;
+                        segmentedId = segmentedId + String.fromCharCode(55296 | snI >> 10, 56320 | 1023 & snI);
+                    };
                 } else {
-                    console.warn("toggleWsPlayerTrick function is not defined.");
-                }
-            }
-        });
+                    segmentedId = segmentedId + String.fromCharCode((31 & i) << 6 | b1);
+                };
+            } else {
+                segmentedId = segmentedId + String.fromCharCode(i);
+            };
+        };
+        return segmentedId;
     };
-
-    setupKeyListener();
-})();
+    function _0x18d59e$jscomp$0(value, left) {
+        return value ? _0x364d84$jscomp$0(_0x2c159b$jscomp$0, value, left) : "";
+    };
+    function _0x710b07$jscomp$0(text, value, key, code) {
+        if(!(code > 0)) {
+            return 0;
+        };
+        var KEY0 = key;
+        var c = key + code - 1;
+        var i = 0;
+        for(; i < text.length; ++i) {
+            var character = text.charCodeAt(i);
+            if(character >= 55296 && character <= 57343) {
+                var _0x216e31 = text.charCodeAt(++i);
+                character = 65536 + ((1023 & character) << 10) | 1023 & _0x216e31;
+            };
+            if(character <= 127) {
+                if(key >= c) {
+                    break;
+                };
+                value[key++] = character;
+            } else {
+                if(character <= 2047) {
+                    if(key + 1 >= c) {
+                        break;
+                    };
+                    value[key++] = 192 | character >> 6;
+                    value[key++] = 128 | 63 & character;
+                } else {
+                    if(character <= 65535) {
+                        if(key + 2 >= c) {
+                            break;
+                        };
+                        value[key++] = 224 | character >> 12;
+                        value[key++] = 128 | character >> 6 & 63;
+                        value[key++] = 128 | 63 & character;
+                    } else {
+                        if(key + 3 >= c) {
+                            break;
+                        };
+                        value[key++] = 240 | character >> 18;
+                        value[key++] = 128 | character >> 12 & 63;
+                        value[key++] = 128 | character >> 6 & 63;
+                        value[key++] = 128 | 63 & character;
+                    };
+                };
+            };
+        };
+        return value[key] = 0,
+            key - KEY0;
+    };
+    function _0x36268d$jscomp$0(message, initialValue, params) {
+        return _0x710b07$jscomp$0(message, _0x2c159b$jscomp$0, initialValue, params);
+    };
+    function _0xaf9b5$jscomp$0(text) {
+        var _0x41d111 = 0;
+        var i = 0;
+        for(; i < text.length; ++i) {
+            var $sendIcon = text.charCodeAt(i);
+            if($sendIcon >= 55296 && $sendIcon <= 57343) {
+                $sendIcon = 65536 + ((1023 & $sendIcon) << 10) | 1023 & text.charCodeAt(++i);
+            };
+            if($sendIcon <= 127) {
+                ++_0x41d111;
+            } else {
+                _0x41d111 = _0x41d111 + ($sendIcon <= 2047 ? 2 : $sendIcon <= 65535 ? 3 : 4);
+            };
+        };
+        return _0x41d111;
+    };
+    function _0x45ab50$jscomp$0(untypedElevationArray) {
+        _0x4f7d64$jscomp$0.HEAP8 = _0x43f8b2$jscomp$0 = new Int8Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAP16 = _0x4204f0$jscomp$0 = new Int16Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAP32 = _0x2917ec$jscomp$0 = new Int32Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAPU8 = _0x2c159b$jscomp$0 = new Uint8Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAPU16 = _0x37eff3$jscomp$0 = new Uint16Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAPU32 = _0x3322a0$jscomp$0 = new Uint32Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAPF32 = _0x28607a$jscomp$0 = new Float32Array(untypedElevationArray);
+        _0x4f7d64$jscomp$0.HEAPF64 = _0x241d97$jscomp$0 = new Float64Array(untypedElevationArray);
+    };
+    function _0x55729a$jscomp$0() {
+        function test(component) {
+            _0x4f7d64$jscomp$0.asm = component.exports;
+            _0x45ab50$jscomp$0(_0x4f7d64$jscomp$0.asm.g.buffer);
+            _0x33e8b7$jscomp$0();
+            _0x1e5f8d$jscomp$0();
+        };
+        function id(fn) {
+            test(fn.instance);
+        };
+        function instantiate(id) {
+            WebAssembly.instantiate(wasmBuffers, locals).then(fn => {
+                id(fn);
+                typeof callback == "function" && callback(_0x4f7d64$jscomp$0.decodeOpcode5(hostname, data_12));
+            });
+        };
+        var locals = {
+            "a": {
+                "d": () => {},
+                "e": () => {},
+                "c": () => {},
+                "f": () => {},
+                "b": _0x2db992$jscomp$0,
+                "a": _0x1cbea8$jscomp$0
+            }
+        };
+        if(_0x4f7d64$jscomp$0.instantiateWasm) {
+            try {
+                return _0x4f7d64$jscomp$0.instantiateWasm(locals, test);
+            } catch (_0xe87ddd) {
+                return console.log("Module.instantiateWasm callback failed with error: " + _0xe87ddd), false;
+            };
+        };
+        instantiate(id);
+        return {};
+    };
+    function _0x2db992$jscomp$0(_0x264e37$jscomp$0) {
+        let e = _0x18d59e$jscomp$0(_0x264e37$jscomp$0);
+        if(e.includes('typeof window === "undefined" ? 1 : 0;')) {
+            return 0;
+        };
+        if(e.includes("typeof process !== 'undefined' ? 1 : 0;")) {
+            return 0;
+        };
+        if(e.includes('Game.currentGame.network.connected ? 1 : 0')) {
+            return 1;
+        };
+        if(e.includes('Game.currentGame.world.myUid === null ? 0 : Game.currentGame.world.myUid;')) {
+            return 0;
+        };
+        if(e.includes('document.getElementById("hud").children.length;')) {
+            return 24;
+        };
+        if(e.includes("hostname")) {
+            return hostname;
+        };
+        let data = eval(_0x18d59e$jscomp$0(_0x264e37$jscomp$0));
+        return 0 | data;
+    };
+    function _0x1cbea8$jscomp$0(_0xdcd74c$jscomp$0) {
+        var _0x49bfc6$jscomp$0 = hostname;
+        if(null == _0x49bfc6$jscomp$0) return 0;
+        _0x49bfc6$jscomp$0 = String(_0x49bfc6$jscomp$0);
+        var _0x1bcee7$jscomp$0 = _0x1cbea8$jscomp$0;
+        var _0x5383b2$jscomp$0 = _0xaf9b5$jscomp$0(_0x49bfc6$jscomp$0);
+        return (!_0x1bcee7$jscomp$0.bufferSize ||
+                _0x1bcee7$jscomp$0.bufferSize < _0x5383b2$jscomp$0 + 1) &&
+            (_0x1bcee7$jscomp$0.bufferSize &&
+                _0x620aa9$jscomp$0(_0x1bcee7$jscomp$0.buffer),
+                _0x1bcee7$jscomp$0.bufferSize = _0x5383b2$jscomp$0 + 1,
+                _0x1bcee7$jscomp$0.buffer = _0x141790$jscomp$0(_0x1bcee7$jscomp$0.bufferSize)),
+            _0x36268d$jscomp$0(_0x49bfc6$jscomp$0, _0x1bcee7$jscomp$0.buffer, _0x1bcee7$jscomp$0.bufferSize),
+            _0x1bcee7$jscomp$0.buffer;
+    };
+    function _0x1e5f8d$jscomp$0() {
+        _0x2917ec$jscomp$0[1328256] = 5313008;
+        _0x2917ec$jscomp$0[1328257] = 0;
+        try {
+            _0x4f7d64$jscomp$0._main(1, 5313024);
+        } finally {};
+    };
+    var _0x4f7d64$jscomp$0 = {};
+    var _0x30c1b5$jscomp$0 = new TextDecoder("utf8");
+    var _0x2c159b$jscomp$0;
+    var _0x2917ec$jscomp$0;
+    _0x55729a$jscomp$0();
+    var _0x33e8b7$jscomp$0 = _0x4f7d64$jscomp$0.___wasm_call_ctors = function() {
+        return (_0x33e8b7$jscomp$0 = _0x4f7d64$jscomp$0.___wasm_call_ctors = _0x4f7d64$jscomp$0.asm.h).apply(null, arguments);
+    };
+    var _0x6f9ca9$jscomp$0 = _0x4f7d64$jscomp$0._main = function() {
+        return (_0x6f9ca9$jscomp$0 = _0x4f7d64$jscomp$0._main = _0x4f7d64$jscomp$0.asm.i).apply(null, arguments);
+    };
+    var _0x1d0522$jscomp$0 = _0x4f7d64$jscomp$0._MakeBlendField = function() {
+        return (_0x1d0522$jscomp$0 = _0x4f7d64$jscomp$0._MakeBlendField = _0x4f7d64$jscomp$0.asm.j).apply(null, arguments);
+    };
+    var _0x141790$jscomp$0 = _0x4f7d64$jscomp$0._malloc = function() {
+        return (_0x141790$jscomp$0 = _0x4f7d64$jscomp$0._malloc = _0x4f7d64$jscomp$0.asm.l).apply(null, arguments);
+    };
+    var _0x620aa9$jscomp$0 = _0x4f7d64$jscomp$0._free = function() {
+        return (_0x620aa9$jscomp$0 = _0x4f7d64$jscomp$0._free = _0x4f7d64$jscomp$0.asm.m).apply(null, arguments);
+    };
+    _0x4f7d64$jscomp$0.decodeOpcode5 = function(hostname, extra) {
+        _0x4f7d64$jscomp$0.hostname = hostname;
+        let DecodedOpcode5 = codec.decode(new Uint8Array(extra), _0x4f7d64$jscomp$0);
+        let EncodedEnterWorld2 = codec.encode(6, {}, _0x4f7d64$jscomp$0);
+        return {
+            5: DecodedOpcode5,
+            6: EncodedEnterWorld2,
+            10: _0x4f7d64$jscomp$0
+        };
+    };
+    return _0x4f7d64$jscomp$0;
+};
